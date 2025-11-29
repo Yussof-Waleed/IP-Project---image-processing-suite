@@ -1,0 +1,16 @@
+# Image Processing Mini-Suite - Dependencies
+# GUI Framework
+PySide6>=6.5.0
+
+# Core image/array processing
+numpy>=1.24.0
+Pillow>=10.0.0
+
+# Plotting (for histograms)
+matplotlib>=3.7.0
+
+# Testing
+pytest>=7.4.0
+
+# Optional: for packaging
+# pyinstaller>=5.13.0
