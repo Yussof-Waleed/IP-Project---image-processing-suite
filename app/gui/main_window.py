@@ -541,6 +541,15 @@ class MainWindow(QMainWindow):
                 # Show bicubic result (highest quality)
                 self.set_processed_image(results["Bicubic"])
                 self._statusbar.showMessage(f"Compared methods at {scale:.2f}x (showing Bicubic)")
+                
+                # Show info about all methods
+                h, w = source.shape[:2]
+                new_size = f"{int(w*scale)}x{int(h*scale)}"
+                QMessageBox.information(self, "Interpolation Comparison",
+                    f"<b>Resized from {w}x{h} to {new_size}</b><br><br>"
+                    f"• <b>Nearest Neighbor:</b> Fast, pixelated<br>"
+                    f"• <b>Bilinear:</b> Smooth, some blur<br>"
+                    f"• <b>Bicubic:</b> Best quality (shown)<br>")
 
     def _handle_operations(self, operation: str, params: dict) -> None:
         """Handle general operations (crop, etc.)."""

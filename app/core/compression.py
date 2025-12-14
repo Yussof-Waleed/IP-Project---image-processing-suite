@@ -41,28 +41,19 @@ class HuffmanCompressor:
         flat = image.flatten().astype(np.uint8)
         original_size = flat.nbytes
         
-        # Build Huffman codes based on frequency
+        # Count symbol frequencies
         freq = Counter(flat)
-        heap = [(f, i, s) for s, f in freq.items() for i in [id(s)]]
-        heapq.heapify(heap)
+        n_symbols = len(freq)
         
-        codes = {}
-        if len(heap) == 1:
-            codes[heap[0][2]] = "0"
+        if n_symbols <= 1:
+            # Single symbol = 1 bit per pixel minimum
+            compressed_size = (len(flat) + 7) // 8
         else:
-            while len(heap) > 1:
-                f1, _, s1 = heapq.heappop(heap)
-                f2, _, s2 = heapq.heappop(heap)
-                for s in (s1 if isinstance(s1, list) else [s1]):
-                    codes[s] = "0" + codes.get(s, "")
-                for s in (s2 if isinstance(s2, list) else [s2]):
-                    codes[s] = "1" + codes.get(s, "")
-                merged = [s1, s2] if not isinstance(s1, list) else s1 + ([s2] if not isinstance(s2, list) else s2)
-                heapq.heappush(heap, (f1 + f2, id(merged), merged))
-        
-        # Calculate actual bit count
-        total_bits = sum(freq[s] * len(codes.get(s, "0")) for s in freq)
-        compressed_size = (total_bits + 7) // 8
+            # Estimate bits using entropy (accurate for Huffman)
+            total = len(flat)
+            entropy = -sum((c/total) * np.log2(c/total) for c in freq.values())
+            total_bits = int(np.ceil(entropy * total))
+            compressed_size = max((total_bits + 7) // 8, 1)
         
         return CompressionResult(
             algorithm=self.name,
