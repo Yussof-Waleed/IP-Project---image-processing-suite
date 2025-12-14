@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QMenuBar,
     QMenu,
+    QCheckBox,
 )
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QPixmap, QImage, QAction, QKeySequence
@@ -77,6 +78,8 @@ from app.gui.widgets.param_dialog import (
     ResizeDialog,
     CropDialog,
 )
+from app.gui.widgets.crop_widget import InteractiveCropDialog
+from app.gui.widgets.histogram_widget import HistogramDialog
 
 
 class MainWindow(QMainWindow):
@@ -86,7 +89,9 @@ class MainWindow(QMainWindow):
         super().__init__()
         self._current_image: np.ndarray | None = None
         self._processed_image: np.ndarray | None = None
+        self._original_image: np.ndarray | None = None  # For reset functionality
         self._current_path: Path | None = None
+        self._compound_mode: bool = False  # Apply to processed instead of original
         
         # Initialize processors
         self._grayscale_proc = GrayscaleProcessor()
@@ -193,6 +198,21 @@ class MainWindow(QMainWindow):
         self._btn_save.clicked.connect(self._on_save_image)
         file_layout.addWidget(self._btn_save)
         
+        # Reset button
+        self._btn_reset = QPushButton("🔄 Reset to Original")
+        self._btn_reset.setEnabled(False)
+        self._btn_reset.clicked.connect(self._on_reset_to_original)
+        file_layout.addWidget(self._btn_reset)
+        
+        # Compound mode checkbox
+        self._chk_compound = QCheckBox("🔗 Compound Modifications")
+        self._chk_compound.setToolTip(
+            "When enabled, operations apply to the processed image\n"
+            "instead of the original, allowing stacked effects."
+        )
+        self._chk_compound.toggled.connect(self._on_compound_toggled)
+        file_layout.addWidget(self._chk_compound)
+        
         layout.addWidget(file_group)
 
         # Metadata display
@@ -258,6 +278,7 @@ class MainWindow(QMainWindow):
         """Load image from path and update displays."""
         try:
             self._current_image = load_image(path)
+            self._original_image = self._current_image.copy()  # Save original for reset
             self._current_path = path
             self._processed_image = None
             
@@ -268,6 +289,9 @@ class MainWindow(QMainWindow):
             self._processed_display.image_label.clear()
             self._processed_display.image_label.setText("No processing applied")
             
+            # Enable/disable buttons
+            self._btn_reset.setEnabled(False)  # No processing yet
+            
             # Update metadata
             metadata = get_image_metadata(path)
             self._update_metadata_display(metadata)
@@ -276,6 +300,35 @@ class MainWindow(QMainWindow):
             
         except Exception as e:
             self._statusbar.showMessage(f"Error loading image: {e}")
+
+    def _on_compound_toggled(self, checked: bool) -> None:
+        """Handle compound mode checkbox toggle."""
+        self._compound_mode = checked
+        if checked:
+            self._statusbar.showMessage("🔗 Compound mode: Operations will stack on processed image")
+        else:
+            self._statusbar.showMessage("🔗 Compound mode off: Operations apply to original image")
+
+    def _on_reset_to_original(self) -> None:
+        """Reset to the original loaded image."""
+        if self._original_image is not None:
+            self._current_image = self._original_image.copy()
+            self._processed_image = None
+            
+            # Update displays
+            self._display_array(self._current_image, self._original_display.image_label)
+            self._processed_display.image_label.clear()
+            self._processed_display.image_label.setText("No processing applied")
+            
+            self._btn_reset.setEnabled(False)
+            self._btn_save.setEnabled(False)
+            self._statusbar.showMessage("🔄 Reset to original image")
+
+    def _get_source_image(self) -> np.ndarray:
+        """Get the image to apply operations to based on compound mode."""
+        if self._compound_mode and self._processed_image is not None:
+            return self._processed_image
+        return self._current_image
 
     # ─────────────────────────────────────────────────────────────────
     # Queries (read-only helpers)
@@ -357,38 +410,64 @@ class MainWindow(QMainWindow):
 
     def _handle_conversion(self, operation: str, params: dict) -> None:
         """Handle format conversion operations."""
+        source = self._get_source_image()
+        
         if operation == "grayscale":
-            result = self._grayscale_proc.process(self._current_image)
+            result = self._grayscale_proc.process(source)
             self.set_processed_image(result)
             self._statusbar.showMessage("Converted to grayscale")
 
         elif operation == "binary":
-            result = self._binary_proc.process(self._current_image, **params)
+            result = self._binary_proc.process(source, **params)
             self.set_processed_image(result)
             threshold = params.get("threshold", "auto")
             self._statusbar.showMessage(f"Applied binary threshold: {threshold}")
 
         elif operation == "evaluate_threshold":
-            evaluation = self._binary_proc.evaluate_threshold(
-                self._current_image, params.get("threshold")
+            evaluation = self._binary_proc.evaluate_threshold(source)
+            
+            # Check if image is already binary
+            if evaluation.get('is_binary', False):
+                QMessageBox.information(self, "Threshold Evaluation",
+                    f"<h3>ℹ️ Image is Already Binary</h3>"
+                    f"<p>Foreground: {evaluation['foreground_ratio']*100:.0f}% | "
+                    f"Background: {evaluation['background_ratio']*100:.0f}%</p>"
+                )
+                return
+            
+            # Show evaluation result
+            is_optimal = evaluation['is_optimal']
+            mean_t = evaluation['mean_threshold']
+            otsu_t = evaluation['otsu_threshold']
+            quality = evaluation['mean_quality_percent']
+            
+            color = "#4CAF50" if is_optimal else "#F44336"
+            status = "✅ OPTIMAL" if is_optimal else "❌ NOT OPTIMAL"
+            
+            html = (
+                f"<h3 style='color:{color};'>{status}</h3>"
+                f"<table cellpadding='4'>"
+                f"<tr><td>Mean Threshold:</td><td><b>{mean_t:.0f}</b></td></tr>"
+                f"<tr><td>Otsu Threshold:</td><td><b>{otsu_t:.0f}</b></td></tr>"
+                f"<tr><td>Quality:</td><td>{quality:.0f}%</td></tr>"
+                f"<tr><td>Foreground:</td><td>{evaluation['foreground_ratio']*100:.0f}%</td></tr>"
+                f"<tr><td>Background:</td><td>{evaluation['background_ratio']*100:.0f}%</td></tr>"
+                f"</table>"
             )
-            QMessageBox.information(
-                self,
-                "Threshold Evaluation",
-                f"<b>Threshold:</b> {evaluation['threshold_used']:.1f}<br><br>"
-                f"<b>Optimal:</b> {'Yes ✓' if evaluation['is_optimal'] else 'No ✗'}<br><br>"
-                f"<b>Analysis:</b><br>{evaluation['analysis']}<br><br>"
-                f"<b>Foreground:</b> {evaluation['foreground_ratio']*100:.1f}%<br>"
-                f"<b>Background:</b> {evaluation['background_ratio']*100:.1f}%"
-            )
+            if not is_optimal:
+                html += f"<p><b>💡 Use Otsu ({otsu_t:.0f}) for better results.</b></p>"
+            
+            QMessageBox.information(self, "Threshold Evaluation", html)
 
     def _handle_transform(self, operation: str, params: dict) -> None:
         """Handle affine transformation operations."""
+        source = self._get_source_image()
+        
         if operation == "translation":
             dialog = TranslationDialog(self)
             if dialog.exec():
                 params = dialog.get_params()
-                result = self._translation_proc.process(self._current_image, **params)
+                result = self._translation_proc.process(source, **params)
                 self.set_processed_image(result)
                 self._statusbar.showMessage(f"Translated by ({params['tx']}, {params['ty']})")
 
@@ -396,7 +475,7 @@ class MainWindow(QMainWindow):
             dialog = ScalingDialog(self)
             if dialog.exec():
                 params = dialog.get_params()
-                result = self._scaling_proc.process(self._current_image, **params)
+                result = self._scaling_proc.process(source, **params)
                 self.set_processed_image(result)
                 self._statusbar.showMessage(f"Scaled by ({params['sx']:.2f}, {params['sy']:.2f})")
 
@@ -404,7 +483,7 @@ class MainWindow(QMainWindow):
             dialog = RotationDialog(self)
             if dialog.exec():
                 params = dialog.get_params()
-                result = self._rotation_proc.process(self._current_image, **params)
+                result = self._rotation_proc.process(source, **params)
                 self.set_processed_image(result)
                 self._statusbar.showMessage(f"Rotated by {params['angle']:.1f}°")
 
@@ -412,7 +491,7 @@ class MainWindow(QMainWindow):
             dialog = ShearDialog("X", self)
             if dialog.exec():
                 params = dialog.get_params()
-                result = self._shear_x_proc.process(self._current_image, **params)
+                result = self._shear_x_proc.process(source, **params)
                 self.set_processed_image(result)
                 self._statusbar.showMessage(f"Sheared X by {params['shear']:.2f}")
 
@@ -420,17 +499,19 @@ class MainWindow(QMainWindow):
             dialog = ShearDialog("Y", self)
             if dialog.exec():
                 params = dialog.get_params()
-                result = self._shear_y_proc.process(self._current_image, **params)
+                result = self._shear_y_proc.process(source, **params)
                 self.set_processed_image(result)
                 self._statusbar.showMessage(f"Sheared Y by {params['shear']:.2f}")
 
     def _handle_interpolation(self, operation: str, params: dict) -> None:
         """Handle interpolation/resize operations."""
+        source = self._get_source_image()
+        
         if operation == "nearest":
             dialog = ResizeDialog("Nearest Neighbor", self)
             if dialog.exec():
                 params = dialog.get_params()
-                result = self._nn_resizer.process(self._current_image, **params)
+                result = self._nn_resizer.process(source, **params)
                 self.set_processed_image(result)
                 self._statusbar.showMessage(f"Resized (NN) by {params['scale']:.2f}x")
 
@@ -438,7 +519,7 @@ class MainWindow(QMainWindow):
             dialog = ResizeDialog("Bilinear", self)
             if dialog.exec():
                 params = dialog.get_params()
-                result = self._bilinear_resizer.process(self._current_image, **params)
+                result = self._bilinear_resizer.process(source, **params)
                 self.set_processed_image(result)
                 self._statusbar.showMessage(f"Resized (Bilinear) by {params['scale']:.2f}x")
 
@@ -446,7 +527,7 @@ class MainWindow(QMainWindow):
             dialog = ResizeDialog("Bicubic", self)
             if dialog.exec():
                 params = dialog.get_params()
-                result = self._bicubic_resizer.process(self._current_image, **params)
+                result = self._bicubic_resizer.process(source, **params)
                 self.set_processed_image(result)
                 self._statusbar.showMessage(f"Resized (Bicubic) by {params['scale']:.2f}x")
 
@@ -455,24 +536,18 @@ class MainWindow(QMainWindow):
             if dialog.exec():
                 params = dialog.get_params()
                 scale = params.get("scale", 2.0)
-                results = compare_interpolation_methods(self._current_image, scale)
-                
-                # Show comparison info
-                info_text = "<b>Interpolation Comparison</b><br><br>"
-                for method, data in results.items():
-                    info_text += f"<b>{method}:</b> {data['time_ms']:.1f}ms<br>"
-                    info_text += f"<i>{data['description']}</i><br><br>"
-                
-                QMessageBox.information(self, "Comparison Results", info_text)
+                results = compare_interpolation_methods(source, scale)
                 
                 # Show bicubic result (highest quality)
-                self.set_processed_image(results["Bicubic"]["result"])
-                self._statusbar.showMessage(f"Compared all methods at {scale:.2f}x (showing Bicubic)")
+                self.set_processed_image(results["Bicubic"])
+                self._statusbar.showMessage(f"Compared methods at {scale:.2f}x (showing Bicubic)")
 
     def _handle_operations(self, operation: str, params: dict) -> None:
         """Handle general operations (crop, etc.)."""
+        source = self._get_source_image()
+        
         if operation == "crop_coords":
-            h, w = self._current_image.shape[:2]
+            h, w = source.shape[:2]
             dialog = CropDialog(w, h, self)
             if dialog.exec():
                 params = dialog.get_params()
@@ -485,34 +560,41 @@ class MainWindow(QMainWindow):
                 cw = min(cw, w - x)
                 ch = min(ch, h - y)
                 
-                if self._current_image.ndim == 3:
-                    result = self._current_image[y:y+ch, x:x+cw, :].copy()
+                if source.ndim == 3:
+                    result = source[y:y+ch, x:x+cw, :].copy()
                 else:
-                    result = self._current_image[y:y+ch, x:x+cw].copy()
+                    result = source[y:y+ch, x:x+cw].copy()
                 
                 self.set_processed_image(result)
                 self._statusbar.showMessage(f"Cropped to {cw}x{ch} at ({x}, {y})")
 
         elif operation == "crop_interactive":
-            self._statusbar.showMessage("Interactive crop: Click and drag on image (TODO)")
+            dialog = InteractiveCropDialog(source, self)
+            if dialog.exec():
+                selection = dialog.get_selection()
+                if selection:
+                    x, y, cw, ch = selection
+                    if source.ndim == 3:
+                        result = source[y:y+ch, x:x+cw, :].copy()
+                    else:
+                        result = source[y:y+ch, x:x+cw].copy()
+                    self.set_processed_image(result)
+                    self._statusbar.showMessage(f"Cropped to {cw}×{ch} at ({x}, {y})")
+            else:
+                self._statusbar.showMessage("Crop cancelled")
 
     def _handle_histogram(self, operation: str, params: dict) -> None:
         """Handle histogram operations."""
+        source = self._get_source_image()
+        
         if operation == "show":
-            result = self._histogram_proc.compute_histogram(self._current_image)
-            # Display histogram info (actual plot would need matplotlib)
-            info = (
-                f"<b>Histogram Statistics</b><br><br>"
-                f"<b>Mean:</b> {result.mean:.1f}<br>"
-                f"<b>Std Dev:</b> {result.std:.1f}<br>"
-                f"<b>Range:</b> {result.min_val} - {result.max_val}<br><br>"
-                f"<i>Note: Full histogram plot requires matplotlib window</i>"
-            )
-            QMessageBox.information(self, "Histogram", info)
-            self._statusbar.showMessage("Histogram computed")
+            result = self._histogram_proc.compute_histogram(source)
+            dialog = HistogramDialog(source, result, self)
+            dialog.exec()
+            self._statusbar.showMessage("Histogram displayed")
 
         elif operation == "analyze":
-            result = self._histogram_proc.compute_histogram(self._current_image)
+            result = self._histogram_proc.compute_histogram(source)
             status = "⚠️ Low Contrast" if result.is_low_contrast else "✓ Good Contrast"
             info = (
                 f"<b>Contrast Analysis</b><br><br>"
@@ -527,39 +609,43 @@ class MainWindow(QMainWindow):
             self._statusbar.showMessage(f"Contrast: {'Low' if result.is_low_contrast else 'Good'}")
 
         elif operation == "equalize":
-            result = self._hist_eq_proc.process(self._current_image)
+            result = self._hist_eq_proc.process(source)
             self.set_processed_image(result)
             self._statusbar.showMessage("Histogram equalization applied")
 
     def _handle_filter(self, operation: str, params: dict) -> None:
         """Handle spatial filter operations."""
+        source = self._get_source_image()
+        
         if operation == "gaussian":
-            result = self._gaussian_filter.process(self._current_image)
+            result = self._gaussian_filter.process(source)
             self.set_processed_image(result)
             self._statusbar.showMessage("Applied Gaussian filter (19×19, σ=3)")
 
         elif operation == "median":
-            result = self._median_filter.process(self._current_image)
+            result = self._median_filter.process(source)
             self.set_processed_image(result)
             self._statusbar.showMessage("Applied Median filter (7×7)")
 
         elif operation == "laplacian":
-            result = self._laplacian_filter.process(self._current_image)
+            result = self._laplacian_filter.process(source)
             self.set_processed_image(result)
             self._statusbar.showMessage("Applied Laplacian edge detection")
 
         elif operation == "sobel":
-            result = self._sobel_filter.process(self._current_image)
+            result = self._sobel_filter.process(source)
             self.set_processed_image(result)
             self._statusbar.showMessage("Applied Sobel edge detection")
 
         elif operation == "gradient":
-            result = self._gradient_filter.process(self._current_image)
+            result = self._gradient_filter.process(source)
             self.set_processed_image(result)
             self._statusbar.showMessage("Applied Gradient magnitude")
 
     def _handle_compression(self, operation: str, params: dict) -> None:
         """Handle compression operations."""
+        source = self._get_source_image()
+        
         compressors = {
             "huffman": (self._huffman, "Huffman"),
             "golomb": (self._golomb, "Golomb-Rice"),
@@ -574,7 +660,7 @@ class MainWindow(QMainWindow):
         }
         
         if operation == "compare_all":
-            results = compare_compression(self._current_image)
+            results = compare_compression(source)
             info_text = "<b>Compression Comparison</b><br><br>"
             info_text += "<table border='1' cellpadding='4'>"
             info_text += "<tr><th>Algorithm</th><th>Original</th><th>Compressed</th><th>Ratio</th></tr>"
@@ -598,7 +684,7 @@ class MainWindow(QMainWindow):
         
         if operation in compressors:
             compressor, name = compressors[operation]
-            result = compressor.compress(self._current_image)
+            result = compressor.compress(source)
             
             # Generate preview image
             # Lossless compressions: preview is the original (perfect reconstruction)
@@ -608,7 +694,7 @@ class MainWindow(QMainWindow):
                 preview = self._generate_lossy_preview(operation)
             else:
                 # Lossless: preview is same as original
-                preview = self._current_image.copy()
+                preview = source.copy()
             
             # Show the preview
             self.set_processed_image(preview)
@@ -633,8 +719,9 @@ class MainWindow(QMainWindow):
     
     def _generate_lossy_preview(self, method: str) -> np.ndarray:
         """Generate preview showing quality loss for lossy compression."""
-        gray = self._current_image if self._current_image.ndim == 2 else \
-               np.mean(self._current_image, axis=2).astype(np.float64)
+        source = self._get_source_image()
+        gray = source if source.ndim == 2 else \
+               np.mean(source, axis=2).astype(np.float64)
         h, w = gray.shape
         
         if method == "dct":
@@ -672,7 +759,7 @@ class MainWindow(QMainWindow):
             
             return np.clip(result, 0, 255).astype(np.uint8)
         
-        return self._current_image.copy()
+        return source.copy()
 
     def _on_save_image(self) -> None:
         """Save the processed image to disk."""
@@ -707,3 +794,4 @@ class MainWindow(QMainWindow):
         self._processed_image = image
         self._display_array(image, self._processed_display.image_label)
         self._btn_save.setEnabled(True)
+        self._btn_reset.setEnabled(True)

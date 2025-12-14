@@ -1,18 +1,14 @@
 """
-Image interpolation/resizing algorithms.
-
-Implements three manual resizing methods:
-- Nearest Neighbor (fastest, blocky)
-- Bilinear (smooth, 4 neighbors)
-- Bicubic (smoothest, 16 neighbors)
-
-All implementations are manual without using cv2.resize or similar.
+Image resizing with three interpolation methods:
+- Nearest Neighbor (fast, blocky)
+- Bilinear (smooth)
+- Bicubic (highest quality)
 """
 
 import math
 import numpy as np
 
-from app.core.interfaces import ResizeProcessor, InterpolationMethod, ParamInfo
+from app.core.interfaces import ImageProcessor
 
 
 def _cubic_weight(t: float) -> float:
@@ -215,7 +211,7 @@ def resize_bicubic(image: np.ndarray, new_width: int, new_height: int) -> np.nda
 # Processor Classes
 # ─────────────────────────────────────────────────────────────────────────────
 
-class NearestNeighborResizer(ResizeProcessor):
+class NearestNeighborResizer(ImageProcessor):
     """Resize using nearest neighbor interpolation."""
 
     @property
@@ -226,32 +222,15 @@ class NearestNeighborResizer(ResizeProcessor):
     def category(self) -> str:
         return "Interpolation"
 
-    @property
-    def method(self) -> InterpolationMethod:
-        return InterpolationMethod.NEAREST
-
-    def get_default_params(self) -> dict:
-        return {"scale": 2.0, "width": None, "height": None}
-
-    def get_param_info(self) -> dict[str, ParamInfo]:
-        return {
-            "scale": ParamInfo("Scale Factor", "float", 2.0, 0.1, 10.0,
-                              tooltip="Scale factor (overrides width/height)"),
-            "width": ParamInfo("Target Width", "int", None, 1, 10000,
-                              tooltip="Target width in pixels"),
-            "height": ParamInfo("Target Height", "int", None, 1, 10000,
-                               tooltip="Target height in pixels"),
-        }
-
     def process(self, image: np.ndarray, **params) -> np.ndarray:
         h, w = image.shape[:2]
         scale = params.get("scale", 2.0)
-        new_width = params.get("width") or int(w * scale)
-        new_height = params.get("height") or int(h * scale)
-        return resize_nearest_neighbor(image, new_width, new_height)
+        new_w = params.get("width") or int(w * scale)
+        new_h = params.get("height") or int(h * scale)
+        return resize_nearest_neighbor(image, new_w, new_h)
 
 
-class BilinearResizer(ResizeProcessor):
+class BilinearResizer(ImageProcessor):
     """Resize using bilinear interpolation."""
 
     @property
@@ -262,30 +241,15 @@ class BilinearResizer(ResizeProcessor):
     def category(self) -> str:
         return "Interpolation"
 
-    @property
-    def method(self) -> InterpolationMethod:
-        return InterpolationMethod.BILINEAR
-
-    def get_default_params(self) -> dict:
-        return {"scale": 2.0, "width": None, "height": None}
-
-    def get_param_info(self) -> dict[str, ParamInfo]:
-        return {
-            "scale": ParamInfo("Scale Factor", "float", 2.0, 0.1, 10.0,
-                              tooltip="Scale factor"),
-            "width": ParamInfo("Target Width", "int", None, 1, 10000),
-            "height": ParamInfo("Target Height", "int", None, 1, 10000),
-        }
-
     def process(self, image: np.ndarray, **params) -> np.ndarray:
         h, w = image.shape[:2]
         scale = params.get("scale", 2.0)
-        new_width = params.get("width") or int(w * scale)
-        new_height = params.get("height") or int(h * scale)
-        return resize_bilinear(image, new_width, new_height)
+        new_w = params.get("width") or int(w * scale)
+        new_h = params.get("height") or int(h * scale)
+        return resize_bilinear(image, new_w, new_h)
 
 
-class BicubicResizer(ResizeProcessor):
+class BicubicResizer(ImageProcessor):
     """Resize using bicubic interpolation."""
 
     @property
@@ -296,82 +260,21 @@ class BicubicResizer(ResizeProcessor):
     def category(self) -> str:
         return "Interpolation"
 
-    @property
-    def method(self) -> InterpolationMethod:
-        return InterpolationMethod.BICUBIC
-
-    def get_default_params(self) -> dict:
-        return {"scale": 2.0, "width": None, "height": None}
-
-    def get_param_info(self) -> dict[str, ParamInfo]:
-        return {
-            "scale": ParamInfo("Scale Factor", "float", 2.0, 0.1, 10.0,
-                              tooltip="Scale factor"),
-            "width": ParamInfo("Target Width", "int", None, 1, 10000),
-            "height": ParamInfo("Target Height", "int", None, 1, 10000),
-        }
-
     def process(self, image: np.ndarray, **params) -> np.ndarray:
         h, w = image.shape[:2]
         scale = params.get("scale", 2.0)
-        new_width = params.get("width") or int(w * scale)
-        new_height = params.get("height") or int(h * scale)
-        return resize_bicubic(image, new_width, new_height)
+        new_w = params.get("width") or int(w * scale)
+        new_h = params.get("height") or int(h * scale)
+        return resize_bicubic(image, new_w, new_h)
 
 
-def compare_interpolation_methods(
-    image: np.ndarray,
-    scale: float = 2.0
-) -> dict[str, dict]:
-    """
-    Compare all interpolation methods on the same image.
-
-    Args:
-        image: Input image.
-        scale: Scale factor for resizing.
-
-    Returns:
-        Dict with method names as keys, containing:
-        - 'result': Resized image
-        - 'time_ms': Processing time (if measured)
-        - 'description': Method characteristics
-    """
-    import time
-    
+def compare_interpolation_methods(image: np.ndarray, scale: float = 2.0) -> dict[str, np.ndarray]:
+    """Compare all interpolation methods. Returns dict of method_name -> resized_image."""
     h, w = image.shape[:2]
-    new_w = int(w * scale)
-    new_h = int(h * scale)
+    new_w, new_h = int(w * scale), int(h * scale)
     
-    results = {}
-    
-    # Nearest Neighbor
-    start = time.perf_counter()
-    nn_result = resize_nearest_neighbor(image, new_w, new_h)
-    nn_time = (time.perf_counter() - start) * 1000
-    results["Nearest Neighbor"] = {
-        "result": nn_result,
-        "time_ms": nn_time,
-        "description": "Fastest. Blocky/pixelated artifacts. Good for pixel art."
+    return {
+        "Nearest Neighbor": resize_nearest_neighbor(image, new_w, new_h),
+        "Bilinear": resize_bilinear(image, new_w, new_h),
+        "Bicubic": resize_bicubic(image, new_w, new_h),
     }
-    
-    # Bilinear
-    start = time.perf_counter()
-    bl_result = resize_bilinear(image, new_w, new_h)
-    bl_time = (time.perf_counter() - start) * 1000
-    results["Bilinear"] = {
-        "result": bl_result,
-        "time_ms": bl_time,
-        "description": "Good balance. Smooth but may blur edges slightly."
-    }
-    
-    # Bicubic
-    start = time.perf_counter()
-    bc_result = resize_bicubic(image, new_w, new_h)
-    bc_time = (time.perf_counter() - start) * 1000
-    results["Bicubic"] = {
-        "result": bc_result,
-        "time_ms": bc_time,
-        "description": "Highest quality. Sharpest edges. Slowest."
-    }
-    
-    return results
