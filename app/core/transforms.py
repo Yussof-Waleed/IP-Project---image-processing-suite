@@ -20,7 +20,7 @@ from app.core.interfaces import TransformProcessor, ParamInfo, InterpolationMeth
 def _nearest_neighbor_sample(image: np.ndarray, y: float, x: float) -> np.ndarray | float:
     """Sample image at (y, x) using nearest neighbor interpolation."""
     h, w = image.shape[:2]
-    yi, xi = int(round(y)), int(round(x))
+    yi, xi = int(y + 0.5), int(x + 0.5)
     
     if 0 <= yi < h and 0 <= xi < w:
         return image[yi, xi]
@@ -67,6 +67,57 @@ def _bilinear_sample(image: np.ndarray, y: float, x: float) -> np.ndarray | floa
     return result
 
 
+def _cubic_weight(t: float) -> float:
+    """
+    Compute cubic interpolation weight (Catmull-Rom spline).
+    """
+    t = abs(t)
+    if t <= 1:
+        return 1.5 * t**3 - 2.5 * t**2 + 1
+    elif t <= 2:
+        return -0.5 * t**3 + 2.5 * t**2 - 4 * t + 2
+    return 0.0
+
+
+def _bicubic_sample(image: np.ndarray, y: float, x: float) -> np.ndarray | float:
+    """Sample image at (y, x) using bicubic interpolation."""
+    h, w = image.shape[:2]
+    is_color = image.ndim == 3
+    channels = image.shape[2] if is_color else 1
+    
+    # Integer part (center of 4x4 grid)
+    y_int = int(math.floor(y))
+    x_int = int(math.floor(x))
+    
+    # Fractional part
+    fy = y - y_int
+    fx = x - x_int
+    
+    def get_pixel(yi: int, xi: int) -> np.ndarray | float:
+        if 0 <= yi < h and 0 <= xi < w:
+            return image[yi, xi].astype(np.float64)
+        if is_color:
+            return np.zeros(channels, dtype=np.float64)
+        return 0.0
+
+    # Accumulate weighted sum over 4x4 neighborhood
+    if is_color:
+        value = np.zeros(channels, dtype=np.float64)
+    else:
+        value = 0.0
+    
+    for j in range(-1, 3):  # -1, 0, 1, 2
+        wy = _cubic_weight(fy - j)
+        for i in range(-1, 3):
+            wx = _cubic_weight(fx - i)
+            weight = wy * wx
+            
+            pixel = get_pixel(y_int + j, x_int + i)
+            value = value + pixel * weight
+            
+    return value
+
+
 def apply_transform(
     image: np.ndarray,
     matrix: np.ndarray,
@@ -103,6 +154,8 @@ def apply_transform(
     # Select interpolation function
     if interpolation == InterpolationMethod.NEAREST:
         sample_fn = _nearest_neighbor_sample
+    elif interpolation == InterpolationMethod.BICUBIC:
+        sample_fn = _bicubic_sample
     else:
         sample_fn = _bilinear_sample
     
@@ -294,7 +347,7 @@ class RotationProcessor(TransformProcessor):
     def get_transform_matrix(self, image_shape: tuple, **params) -> np.ndarray:
         angle = params.get("angle", 0.0)
         h, w = image_shape[:2]
-        center = (w / 2, h / 2)
+        center = ((w - 1) / 2.0, (h - 1) / 2.0)
         return rotation_matrix(angle, center)
 
     def process(self, image: np.ndarray, **params) -> np.ndarray:
@@ -302,7 +355,7 @@ class RotationProcessor(TransformProcessor):
         expand = params.get("expand", True)
         
         h, w = image.shape[:2]
-        center = (w / 2, h / 2)
+        center = ((w - 1) / 2.0, (h - 1) / 2.0)
         
         if expand:
             # Calculate new dimensions to fit rotated image
@@ -314,7 +367,7 @@ class RotationProcessor(TransformProcessor):
             
             # Adjust matrix for new dimensions
             # Translate to new center
-            new_center = (new_w / 2, new_h / 2)
+            new_center = ((new_w - 1) / 2.0, (new_h - 1) / 2.0)
             
             # Build composite matrix
             to_origin = translation_matrix(-center[0], -center[1])
