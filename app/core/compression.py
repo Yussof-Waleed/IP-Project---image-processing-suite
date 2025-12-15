@@ -374,7 +374,11 @@ class WaveletCompressor:
         return "Wavelet"
     
     def compress(self, image: np.ndarray) -> CompressionResult:
-        gray = image if image.ndim == 2 else np.mean(image, axis=2).astype(np.float64)
+        # Always work in float64 to allow subtraction
+        if image.ndim == 2:
+            gray = image.astype(np.float64)
+        else:
+            gray = np.mean(image, axis=2).astype(np.float64)
         h, w = gray.shape
         original_size = h * w
         
