@@ -1,160 +1,66 @@
 """
-Histogram processing and analysis.
-
-Implements:
-- Manual histogram computation
-- Contrast analysis
-- Histogram equalization
+Histogram processing: analysis and equalization.
 """
 
 import numpy as np
 
-from app.core.interfaces import ImageProcessor, HistogramResult, ParamInfo
+from app.core.interfaces import ImageProcessor, HistogramResult
 from app.core.primitives import rgb_to_grayscale, compute_histogram
 
 
 def analyze_histogram(histogram: np.ndarray) -> HistogramResult:
-    """
-    Analyze histogram to determine contrast quality.
-
-    Args:
-        histogram: 256-bin histogram array.
-
-    Returns:
-        HistogramResult with analysis.
-    """
-    # Compute statistics
-    total_pixels = histogram.sum()
+    """Analyze histogram to determine contrast quality."""
+    total = histogram.sum()
+    bins = np.arange(256)
     
-    # Weighted mean
-    mean = 0.0
-    for i in range(256):
-        mean += i * histogram[i]
-    mean /= total_pixels if total_pixels > 0 else 1
+    mean = np.sum(bins * histogram) / total if total > 0 else 0
+    std = np.sqrt(np.sum(histogram * (bins - mean) ** 2) / total) if total > 0 else 0
     
-    # Standard deviation
-    variance = 0.0
-    for i in range(256):
-        variance += histogram[i] * (i - mean) ** 2
-    variance /= total_pixels if total_pixels > 0 else 1
-    std = np.sqrt(variance)
+    nonzero = np.where(histogram > 0)[0]
+    min_val = int(nonzero[0]) if len(nonzero) > 0 else 0
+    max_val = int(nonzero[-1]) if len(nonzero) > 0 else 255
     
-    # Find min/max non-zero values
-    min_val = 0
-    max_val = 255
-    for i in range(256):
-        if histogram[i] > 0:
-            min_val = i
-            break
-    for i in range(255, -1, -1):
-        if histogram[i] > 0:
-            max_val = i
-            break
-    
-    # Analyze contrast
     dynamic_range = max_val - min_val
-    
-    # Low contrast indicators:
-    # 1. Small dynamic range (< 100)
-    # 2. Low standard deviation (< 40)
-    # 3. Most pixels concentrated in small region
-    
     is_low_contrast = dynamic_range < 100 or std < 40
     
     if is_low_contrast:
-        if dynamic_range < 50:
-            analysis = (
-                f"Very low contrast. Dynamic range only {dynamic_range} levels "
-                f"({min_val}-{max_val}). Histogram equalization strongly recommended."
-            )
-        else:
-            analysis = (
-                f"Low contrast detected. Standard deviation is {std:.1f} "
-                f"(good contrast typically > 50). Consider histogram equalization."
-            )
+        analysis = f"Low contrast (range={dynamic_range}, σ={std:.1f}). Equalization recommended."
     else:
-        if std > 70:
-            analysis = (
-                f"Good contrast. Wide distribution with σ={std:.1f}. "
-                f"Dynamic range: {min_val}-{max_val} ({dynamic_range} levels)."
-            )
-        else:
-            analysis = (
-                f"Moderate contrast. σ={std:.1f}, range {min_val}-{max_val}. "
-                f"Equalization may slightly improve appearance."
-            )
+        analysis = f"Good contrast (range={dynamic_range}, σ={std:.1f})."
     
     return HistogramResult(
-        histogram=histogram,
-        mean=mean,
-        std=std,
-        min_val=min_val,
-        max_val=max_val,
-        is_low_contrast=is_low_contrast,
-        contrast_analysis=analysis,
+        histogram=histogram, mean=mean, std=std,
+        min_val=min_val, max_val=max_val,
+        is_low_contrast=is_low_contrast, contrast_analysis=analysis
     )
 
 
 def compute_cdf(histogram: np.ndarray) -> np.ndarray:
     """Compute cumulative distribution function from histogram."""
-    cdf = np.zeros(256, dtype=np.float64)
-    cumsum = 0
-    total = histogram.sum()
-    
-    for i in range(256):
-        cumsum += histogram[i]
-        cdf[i] = cumsum / total if total > 0 else 0
-    
-    return cdf
+    cdf = np.cumsum(histogram).astype(np.float64)
+    return cdf / cdf[-1] if cdf[-1] > 0 else cdf
 
 
 def equalize_histogram(image: np.ndarray) -> np.ndarray:
-    """
-    Apply histogram equalization manually.
-
-    Args:
-        image: Grayscale image (H, W) with values 0-255.
-
-    Returns:
-        Equalized image.
-    """
+    """Apply histogram equalization."""
     if image.ndim != 2:
-        raise ValueError("Image must be grayscale for histogram equalization")
+        raise ValueError("Image must be grayscale")
     
-    h, w = image.shape
-    
-    # Compute histogram
     histogram = compute_histogram(image)
-    
-    # Compute CDF
     cdf = compute_cdf(histogram)
     
-    # Find minimum non-zero CDF value
-    cdf_min = 0
-    for i in range(256):
-        if cdf[i] > 0:
-            cdf_min = cdf[i]
-            break
+    # Find min non-zero CDF
+    cdf_min = cdf[cdf > 0].min() if np.any(cdf > 0) else 0
     
-    # Build lookup table for equalization
-    # Formula: new_value = round((cdf(v) - cdf_min) / (1 - cdf_min) * 255)
-    lut = np.zeros(256, dtype=np.uint8)
-    denominator = 1 - cdf_min
+    # Build lookup table
+    denom = 1 - cdf_min
+    if denom > 0:
+        lut = np.round((cdf - cdf_min) / denom * 255).astype(np.uint8)
+    else:
+        lut = np.arange(256, dtype=np.uint8)
     
-    for i in range(256):
-        if denominator > 0:
-            lut[i] = int(round((cdf[i] - cdf_min) / denominator * 255))
-        else:
-            lut[i] = i
-        lut[i] = max(0, min(255, lut[i]))
-    
-    # Apply lookup table
-    output = np.zeros((h, w), dtype=np.uint8)
-    for y in range(h):
-        for x in range(w):
-            output[y, x] = lut[image[y, x]]
-    
-    return output
+    # Apply LUT using indexing
+    return lut[image.astype(np.uint8)]
 
 
 class HistogramProcessor(ImageProcessor):
