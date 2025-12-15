@@ -424,7 +424,9 @@ class MainWindow(QMainWindow):
             self._statusbar.showMessage(f"Applied binary threshold: {threshold}")
 
         elif operation == "evaluate_threshold":
-            evaluation = self._binary_proc.evaluate_threshold(source)
+            # Analysis operations: always analyze what user is seeing
+            image_to_analyze = self._processed_image if self._processed_image is not None else self._current_image
+            evaluation = self._binary_proc.evaluate_threshold(image_to_analyze)
             
             # Check if image is already binary
             if evaluation.get('is_binary', False):
@@ -595,15 +597,17 @@ class MainWindow(QMainWindow):
     def _handle_histogram(self, operation: str, params: dict) -> None:
         """Handle histogram operations."""
         source = self._get_source_image()
+        # For analysis operations, use what user is seeing
+        visible_image = self._processed_image if self._processed_image is not None else self._current_image
         
         if operation == "show":
-            result = self._histogram_proc.compute_histogram(source)
-            dialog = HistogramDialog(source, result, self)
+            result = self._histogram_proc.compute_histogram(visible_image)
+            dialog = HistogramDialog(visible_image, result, self)
             dialog.exec()
             self._statusbar.showMessage("Histogram displayed")
 
         elif operation == "analyze":
-            result = self._histogram_proc.compute_histogram(source)
+            result = self._histogram_proc.compute_histogram(visible_image)
             status = "⚠️ Low Contrast" if result.is_low_contrast else "✓ Good Contrast"
             info = (
                 f"<b>Contrast Analysis</b><br><br>"
@@ -700,7 +704,7 @@ class MainWindow(QMainWindow):
             # Lossy compressions (DCT, Wavelet): show quality degradation
             if operation in ("dct", "wavelet"):
                 # For lossy, show a simulated degraded version
-                preview = self._generate_lossy_preview(operation)
+                preview = self._generate_lossy_preview(source, operation)
             else:
                 # Lossless: preview is same as original
                 preview = source.copy()
@@ -726,16 +730,18 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, f"{name} Results", info_text)
             self._statusbar.showMessage(f"{name}: {result.compression_ratio:.2f}× ratio - Preview shown")
     
-    def _generate_lossy_preview(self, method: str) -> np.ndarray:
+    def _generate_lossy_preview(self, source: np.ndarray, method: str) -> np.ndarray:
         """Generate preview showing quality loss for lossy compression."""
-        source = self._get_source_image()
-        gray = source if source.ndim == 2 else \
-               np.mean(source, axis=2).astype(np.float64)
+        # Always work in float64 to avoid dtype casting issues
+        if source.ndim == 2:
+            gray = source.astype(np.float64)
+        else:
+            gray = np.mean(source, axis=2).astype(np.float64)
         h, w = gray.shape
         
         if method == "dct":
             # Simulate JPEG-like quality loss with block artifacts
-            result = np.zeros_like(gray)
+            result = np.zeros((h, w), dtype=np.float64)
             quant_factor = 8  # Higher = more loss
             
             # Process 8x8 blocks
@@ -755,7 +761,7 @@ class MainWindow(QMainWindow):
         elif method == "wavelet":
             # Simulate wavelet thresholding loss (softer blur)
             kernel_size = 3
-            result = np.zeros_like(gray)
+            result = np.zeros((h, w), dtype=np.float64)
             
             for i in range(h):
                 for j in range(w):
